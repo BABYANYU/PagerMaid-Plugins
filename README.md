@@ -12,6 +12,7 @@
 | [cj.py](./cj.py) | `,cj` | 列出已安装的 PagerMaid 插件及功能说明。 |
 | [ck.py](./ck.py) | `,ck` | 管理并定时执行 Telegram 机器人签到任务。 |
 | [codex.py](./codex.py) | `,gpt`、`codex reset` | 查询 Codex 使用额度与重置卡，并支持手动重置。 |
+| [dc.py](./dc.py) | `,dc` | 测试 VPS 到 Telegram 各数据中心的延迟，并显示账号会话所在 DC。 |
 | [dme.py](./dme.py) | `,dme` | 批量删除自己发送的消息。 |
 | [ds.py](./ds.py) | `,ds` | 每天在指定时间自动发送消息。 |
 | [fanyi.py](./fanyi.py) | `,f` | 使用 DeepL 或备用翻译服务将消息翻译成中文。 |
