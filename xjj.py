@@ -200,7 +200,10 @@ async def random_video(client: Client, message: Message):
 
     await safe_edit(message, "正在抓取小姐姐...")
     errors: List[str] = []
-    sources = random.sample(VIDEO_SOURCES, len(VIDEO_SOURCES))
+    primary_sources = [source for source in VIDEO_SOURCES if source.get("code") == "003"]
+    fallback_sources = [source for source in VIDEO_SOURCES if source.get("code") != "003"]
+    random.shuffle(fallback_sources)
+    sources = primary_sources + fallback_sources
     for source in sources:
         try:
             await try_source(client, chat_id, source)

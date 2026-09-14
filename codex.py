@@ -12,7 +12,7 @@ import os
 import signal
 import shutil
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -29,7 +29,6 @@ TIME_ZONE = ZoneInfo("Asia/Shanghai")
 CONFIG_PATH = Path(working_dir) / "data" / "gpt_codex_usage.json"
 CARD_TEMP_DIR = Path(working_dir) / "data" / "gpt_codex_usage" / "temp"
 RPC_TIMEOUT = 20
-
 
 def load_config() -> Dict[str, str]:
     try:
@@ -190,6 +189,22 @@ async def read_codex_account(codex_path: str) -> Dict[str, Any]:
     }
 
 
+async def read_codex_account_usage(codex_path: str) -> Optional[Dict[str, Any]]:
+    """读取账号级历史 Token；旧版 Codex CLI 不支持时返回 None。"""
+    try:
+        responses = await call_codex_app_server(
+            codex_path,
+            (
+                {"method": "account/usage/read", "id": 2, "params": {}},
+            ),
+            (1, 2),
+        )
+    except Exception:
+        return None
+    result = responses[2].get("result")
+    return result if isinstance(result, dict) else None
+
+
 def parse_datetime(value: Any) -> Optional[datetime]:
     if not value:
         return None
@@ -252,7 +267,86 @@ def format_result(data: Dict[str, Any]) -> str:
         format_window("5 小时使用限额", limits.get("primary")),
         format_window("每周使用限额", limits.get("secondary")),
     ]
+    history = data.get("history")
+    if isinstance(history, dict):
+        quota.append(format_history_usage(history))
     return "\n\n".join(quota)
+
+
+def integer_token(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def compact_number(value: float, decimals: int = 2) -> str:
+    text = f"{value:.{decimals}f}"
+    return text.rstrip("0").rstrip(".")
+
+
+def format_token_chinese(value: Any) -> str:
+    tokens = integer_token(value)
+    if tokens >= 100_000_000:
+        return compact_number(tokens / 100_000_000) + "亿"
+    if tokens >= 10_000:
+        return compact_number(tokens / 10_000) + "万"
+    return f"{tokens:,}"
+
+
+def format_token_card(value: Any) -> str:
+    tokens = integer_token(value)
+    if tokens >= 1_000_000_000:
+        return compact_number(tokens / 1_000_000_000) + "B"
+    if tokens >= 1_000_000:
+        return compact_number(tokens / 1_000_000) + "M"
+    if tokens >= 1_000:
+        return compact_number(tokens / 1_000) + "K"
+    return str(tokens)
+
+
+def merge_account_history(
+    account_usage: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """读取账号累计 Token，并汇总昨日的账号级 Token。"""
+    summary = (
+        account_usage.get("summary")
+        if isinstance(account_usage, dict)
+        else None
+    )
+    lifetime = integer_token(
+        summary.get("lifetimeTokens") if isinstance(summary, dict) else 0
+    )
+    yesterday_key = (
+        datetime.now(TIME_ZONE).date() - timedelta(days=1)
+    ).isoformat()
+    yesterday_tokens = 0
+    buckets = (
+        account_usage.get("dailyUsageBuckets", [])
+        if isinstance(account_usage, dict)
+        else []
+    )
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        if str(bucket.get("startDate") or "") == yesterday_key:
+            yesterday_tokens += integer_token(bucket.get("tokens"))
+
+    return {
+        "total_tokens": lifetime,
+        "yesterday_tokens": yesterday_tokens,
+        "account_wide": bool(lifetime),
+    }
+
+
+def format_history_usage(history: Dict[str, Any]) -> str:
+    total_tokens = integer_token(history.get("total_tokens"))
+    yesterday_tokens = integer_token(history.get("yesterday_tokens"))
+    return "\n".join([
+        "✦ 使用统计",
+        f"✦ 昨日 Token：{format_token_chinese(yesterday_tokens)}",
+        f"✦ 累计 Token：{format_token_chinese(total_tokens)}",
+    ])
 
 
 def card_window(window: Optional[Dict[str, Any]]) -> Tuple[str, float, str]:
@@ -605,6 +699,7 @@ def create_usage_card(data: Dict[str, Any]) -> Optional[Path]:
         title_font = load_card_font(58 * scale, bold=True)
         subtitle_font = load_card_font(18 * scale, bold=True)
         ring_value_font = load_card_font(86 * scale, bold=True)
+        ring_value_compact_font = load_card_font(70 * scale, bold=True)
         label_font = load_card_font(31 * scale, bold=True)
         small_font = load_card_font(25 * scale, bold=True)
         reset_font = load_card_font(27 * scale)
@@ -653,7 +748,9 @@ def create_usage_card(data: Dict[str, Any]) -> Optional[Path]:
             draw.arc(box, 0, 360, fill=dim, width=22)
             if ratio > 0:
                 draw.arc(box, -90, -90 + 360 * ratio, fill=color, width=22)
-            centered(value, center_x, 247, ring_value_font, white)
+            value_font = ring_value_compact_font if len(value) >= 4 else ring_value_font
+            value_y = 258 if len(value) >= 4 else 247
+            centered(value, center_x, value_y, value_font, white)
             draw.text((text_x, 183), label, font=label_font, fill=white)
             draw.line((text_x, 235, text_x + 158, 235), fill=dim, width=2)
             draw.text((text_x, 260), "REMAINING", font=small_font, fill=muted)
@@ -682,9 +779,142 @@ def create_usage_card(data: Dict[str, Any]) -> Optional[Path]:
         return None
 
 
+def create_usage_card_v2(data: Dict[str, Any]) -> Optional[Path]:
+    """编号 2：左侧额度、右侧累计 Token 与昨日 Token。"""
+    CARD_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    image_path = CARD_TEMP_DIR / f"codex_usage_{uuid.uuid4().hex}.png"
+    try:
+        limits = data.get("limits") or {}
+        primary = limits.get("primary")
+        secondary = limits.get("secondary")
+        primary_text, primary_ratio, primary_reset = card_window(primary)
+        weekly_text, weekly_ratio, _ = card_window(secondary)
+        primary_reset = primary_reset[-5:] if primary_reset != "—" else "—"
+        weekly_date = parse_datetime((secondary or {}).get("resetsAt"))
+        weekly_reset = weekly_date.strftime("%b %d").title() if weekly_date else "—"
+
+        history = data.get("history") or {}
+        token_text = format_token_card(history.get("total_tokens"))
+        yesterday_token_text = format_token_card(history.get("yesterday_tokens"))
+
+        width, height = 1200, 600
+        scale = 3
+        image = Image.new("RGBA", (width * scale, height * scale), "#06080b")
+
+        ambient = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        ambient_draw = ScaledImageDraw(ambient, scale)
+        ambient_draw.ellipse((-220, 90, 620, 760), fill=(35, 216, 245, 20))
+        ambient_draw.ellipse((650, -120, 1400, 650), fill=(143, 104, 255, 18))
+        ambient = ambient.filter(ImageFilter.GaussianBlur(120 * scale))
+        image = Image.alpha_composite(image, ambient)
+        draw = ScaledImageDraw(image, scale)
+
+        white = "#f5f7fa"
+        muted = "#8b94a3"
+        dim = "#29313c"
+        cyan = "#35d8f5"
+        violet = "#8f68ff"
+        panel = "#090c11"
+        panel_alt = "#0d1420"
+
+        title_font = load_card_font(54 * scale, bold=True)
+        subtitle_font = load_card_font(16 * scale, bold=True)
+        section_font = load_card_font(22 * scale, bold=True)
+        label_font = load_card_font(22 * scale, bold=True)
+        percent_font = load_card_font(76 * scale, bold=True)
+        small_font = load_card_font(19 * scale, bold=True)
+        metric_font = load_card_font(62 * scale, bold=True)
+        metric_compact_font = load_card_font(48 * scale, bold=True)
+
+        def text_width(text: str, font: ImageFont.ImageFont) -> float:
+            bounds = draw.textbbox((0, 0), text, font=font)
+            return bounds[2] - bounds[0]
+
+        brand_left, brand_right = "Yanyu", "Bot"
+        brand_x = 54
+        draw.text((brand_x, 14), brand_left, font=title_font, fill=white)
+        draw.text(
+            (brand_x + text_width(brand_left, title_font), 14),
+            brand_right,
+            font=title_font,
+            fill=cyan,
+        )
+        draw.text(
+            (57, 84), "CODEX USAGE OVERVIEW",
+            font=subtitle_font, fill=muted,
+        )
+
+        draw.rounded_rectangle(
+            (42, 128, 742, 580), radius=26,
+            fill=panel, outline=dim, width=2,
+        )
+        draw.rounded_rectangle(
+            (770, 128, 1158, 328), radius=26,
+            fill=panel_alt, outline=dim, width=2,
+        )
+        draw.rounded_rectangle(
+            (770, 348, 1158, 580), radius=26,
+            fill=panel_alt, outline=dim, width=2,
+        )
+        draw.text((76, 158), "CURRENT LIMITS", font=section_font, fill=muted)
+
+        def usage_lane(
+            y: int, label: str, value: str, ratio: float,
+            reset: str, color: str
+        ) -> None:
+            draw.text((78, y), label, font=label_font, fill=white)
+            draw.text((78, y + 36), value, font=percent_font, fill=color)
+            info_x = max(
+                248,
+                78 + text_width(value, percent_font) + 28,
+            )
+            draw.text((info_x, y + 72), "Remaining", font=small_font, fill=muted)
+            draw.text(
+                (info_x, y + 109), "Reset " + reset,
+                font=small_font, fill=muted,
+            )
+            draw.rounded_rectangle(
+                (78, y + 144, 688, y + 168), radius=12, fill="#26303e"
+            )
+            progress = max(0.0, min(1.0, ratio))
+            if progress > 0:
+                draw.rounded_rectangle(
+                    (78, y + 144, 78 + 610 * progress, y + 168),
+                    radius=12, fill=color,
+                )
+
+        usage_lane(218, "5 Hours", primary_text, primary_ratio, primary_reset, cyan)
+        usage_lane(407, "Weekly", weekly_text, weekly_ratio, weekly_reset, violet)
+
+        draw.text((806, 160), "TOTAL TOKENS", font=section_font, fill=muted)
+        token_font = metric_compact_font if len(token_text) > 6 else metric_font
+        draw.text((806, 218), token_text, font=token_font, fill=white)
+        draw.line((806, 294, 1120, 294), fill=cyan, width=4)
+
+        draw.text((806, 380), "YESTERDAY TOKENS", font=section_font, fill=muted)
+        yesterday_font = (
+            metric_compact_font if len(yesterday_token_text) > 6 else metric_font
+        )
+        draw.text(
+            (806, 438), yesterday_token_text,
+            font=yesterday_font, fill=white,
+        )
+        draw.line((806, 514, 1120, 514), fill=violet, width=4)
+
+        resampling = getattr(Image, "Resampling", Image)
+        image.convert("RGB").resize(
+            (width, height), resampling.LANCZOS
+        ).save(image_path, "PNG", optimize=True)
+        return image_path
+    except Exception:
+        with contextlib.suppress(Exception):
+            image_path.unlink()
+        return None
+
+
 async def send_usage_result(client: Client, message: Message, data: Dict[str, Any]) -> None:
     caption = format_result(data)
-    image_path = await asyncio.to_thread(create_usage_card, data)
+    image_path = await asyncio.to_thread(create_usage_card_v2, data)
     if image_path is None:
         await edit_html(message, caption)
         return
@@ -773,6 +1003,8 @@ async def gpt_usage(client: Client, message: Message) -> None:
         if not result.get("account"):
             await edit_plain(message, "Codex CLI 尚未登录 ChatGPT 账号，请先执行 codex login。")
             return
+        account_usage = await read_codex_account_usage(codex_path)
+        result["history"] = merge_account_history(account_usage)
         await send_usage_result(client, message, result)
     except FileNotFoundError:
         await edit_plain(message, "Codex 程序不存在，请使用 ,gpt set path 重新设置。")
