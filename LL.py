@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from pyrogram import filters
+from pyrogram.enums import ParseMode
 
 from pagermaid.enums import Client, Message
 from pagermaid.listener import listener
@@ -44,12 +45,20 @@ def _save_bot_id(bot_id: int) -> None:
 
 def _help_text() -> str:
     return (
-        "**LL_MiaoBot 菜单**\n\n"
-        "`,/analyzeurl` — 分析链接并回传图片\n"
-        "`,/pingurl` — Ping 链接并回传图片\n\n"
-        "`，ll botid <Bot ID>` — 更换目标 Bot ID\n"
-        "`，ll botid reset` — 恢复默认 Bot ID\n\n"
-        f"默认 Bot ID：`{DEFAULT_BOT_ID}`"
+        "<b>✦ 聊天窗口测试机场</b>\n\n"
+        "<blockquote>"
+        f"<b>目标 Bot：</b><code>{_get_bot_id()}</code>"
+        "</blockquote>\n\n"
+        "<b>链接检测</b>\n\n"
+        "<code>,a 链接</code>\n"
+        "测试拓扑并返回结果\n\n"
+        "<code>,p 链接</code>\n"
+        "测试延迟并返回结果\n\n"
+        "<code>,sp 链接</code>\n"
+        "测试速度并返回结果\n\n"
+        "<b>Bot 设置</b>\n\n"
+        "<code>,ll botid Bot ID</code>\n"
+        "更换目标机器人"
     )
 
 
@@ -71,10 +80,11 @@ async def _run_url_command(
     bot: Client,
     message: Message,
     target_command: str,
+    user_command: str,
 ):
     url = (message.arguments or "").strip()
     if not url:
-        return await message.edit(f"用法：`,{target_command} 链接`")
+        return await message.edit(f"用法：`,{user_command} 链接`")
 
     # A Telegram command cannot contain a line break. Reject it instead of
     # silently changing the value sent to the target bot.
@@ -112,50 +122,50 @@ async def _run_url_command(
 
 
 @listener(
-    command="/analyzeurl",
+    command="a",
     description="将链接交给分析机器人，并把机器人生成的图片回传到当前聊天。",
 )
 async def analyze_url(bot: Client, message: Message):
-    await _run_url_command(bot, message, "/analyzeurl")
+    await _run_url_command(bot, message, "/analyzeurl", "a")
 
 
 @listener(
-    command="/pingurl",
+    command="p",
     description="将链接交给 Ping 机器人，并把机器人生成的图片回传到当前聊天。",
 )
 async def ping_url(bot: Client, message: Message):
-    await _run_url_command(bot, message, "/pingurl")
+    await _run_url_command(bot, message, "/pingurl", "p")
+
+
+@listener(
+    command="sp",
+    description="将链接交给测速机器人，并把机器人生成的图片回传到当前聊天。",
+)
+async def speed_url(bot: Client, message: Message):
+    await _run_url_command(bot, message, "/speedurl", "sp")
 
 
 @listener(
     command="ll",
     description="查看 LL_MiaoBot 菜单或设置目标 Bot ID。",
-    parameters="<help|botid [Bot ID|reset]>",
+    parameters="<botid Bot ID>",
 )
 async def ll_menu(_: Client, message: Message):
     arguments = (message.arguments or "").strip().split()
 
-    if not arguments or arguments[0].lower() == "help":
-        return await message.edit(_help_text())
+    if not arguments:
+        return await message.edit(_help_text(), parse_mode=ParseMode.HTML)
 
     if arguments[0].lower() != "botid":
-        return await message.edit(
-            "未知菜单项。请输入 `，ll help` 查看可用指令。"
-        )
+        return await message.edit("未知菜单项。请输入 `,ll` 查看可用指令。")
 
     if len(arguments) == 1:
-        return await message.edit("用法：`，ll botid <Bot ID|reset>`")
+        return await message.edit("用法：`,ll botid Bot ID`")
 
     if len(arguments) != 2:
-        return await message.edit("用法：`，ll botid <Bot ID|reset>`")
+        return await message.edit("用法：`,ll botid Bot ID`")
 
     value = arguments[1].lower()
-    if value == "reset":
-        _save_bot_id(DEFAULT_BOT_ID)
-        return await message.edit(
-            f"✅ 已恢复默认 Bot ID：`{DEFAULT_BOT_ID}`"
-        )
-
     try:
         bot_id = int(value)
     except ValueError:
