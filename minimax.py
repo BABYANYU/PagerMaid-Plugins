@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """PagerMaid-Pyro MiniMax AI 助手。
 
-使用 MiniMax OpenAI 兼容接口进行文字问答、回复内容分析、图片理解和联网查询。
+使用 MiniMax 接口进行文字问答、回复内容分析、图片理解、联网查询和图片生成。
 本插件使用 ,m 指令，可与原 Codex 插件同时加载。
 """
 
@@ -9,6 +9,7 @@ import asyncio
 import base64
 import contextlib
 import html
+import io
 import json
 import logging
 import os
@@ -30,6 +31,7 @@ DEFAULT_MODEL = "MiniMax-M3"
 REQUEST_TIMEOUT = 180
 MAX_IMAGES = 6
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
 RESULT_CHUNK_SIZE = 1700
 MAX_OUTPUT_TOKENS = 4096
 SIGNATURE_PREFIX = "✦ MiniMax · "
@@ -95,6 +97,10 @@ def models_endpoint(settings: dict) -> str:
 
 def search_endpoint(settings: dict) -> str:
     return api_base(settings) + "/coding_plan/search"
+
+
+def image_endpoint(settings: dict) -> str:
+    return api_base(settings) + "/image_generation"
 
 
 def get_http_client() -> httpx.AsyncClient:
@@ -354,6 +360,109 @@ def response_text(data: dict) -> str:
     raise RuntimeError(str(detail or "MiniMax 没有返回回答")[:500])
 
 
+def is_image_generation_request(prompt: str) -> bool:
+    """Route only explicit creation requests to the image model."""
+    text = re.sub(r"\s+", "", prompt).lower()
+    if not text:
+        return False
+    analysis_words = (
+        "分析图片", "分析这张图", "识别图片", "识别截图", "解读图片",
+        "解读截图", "看看图片", "图片里", "图里是什么", "提取图片",
+    )
+    if any(word in text for word in analysis_words):
+        return False
+    direct_words = (
+        "生图", "文生图", "画图", "绘图", "ai作图", "ai绘画",
+    )
+    if any(word in text for word in direct_words):
+        return True
+    return bool(
+        re.search(
+            r"(?:生成|画|绘制|制作|创建|设计)"
+            r".{0,40}?"
+            r"(?:图片|图像|照片|插画|海报|头像|封面|壁纸)",
+            text,
+        )
+    )
+
+
+def image_aspect_ratio(prompt: str) -> str:
+    text = prompt.lower().replace("：", ":").replace("／", "/")
+    choices = (
+        (("9:16", "9/16", "竖屏", "竖版", "手机壁纸"), "9:16"),
+        (("16:9", "16/9", "横屏", "横版"), "16:9"),
+        (("21:9", "21/9", "超宽"), "21:9"),
+        (("3:4", "3/4"), "3:4"),
+        (("4:3", "4/3"), "4:3"),
+        (("2:3", "2/3"), "2:3"),
+        (("3:2", "3/2"), "3:2"),
+        (("1:1", "1/1", "方形", "正方形", "头像"), "1:1"),
+    )
+    for words, ratio in choices:
+        if any(word in text for word in words):
+            return ratio
+    return "1:1"
+
+
+def generated_image_bytes(data: dict) -> bytes:
+    base_response = data.get("base_resp") or {}
+    status_code = base_response.get("status_code", 0)
+    if status_code not in (0, "0", None):
+        raise RuntimeError(
+            "MiniMax 生图失败："
+            + str(base_response.get("status_msg") or status_code)[:500]
+        )
+    payload = data.get("data") or {}
+    images = payload.get("image_base64") or []
+    if not isinstance(images, list) or not images:
+        error = data.get("error") or {}
+        detail = error.get("message") if isinstance(error, dict) else ""
+        raise RuntimeError(str(detail or "MiniMax 没有返回图片")[:500])
+    try:
+        content = base64.b64decode(images[0], validate=True)
+    except (ValueError, TypeError) as exc:
+        raise RuntimeError("MiniMax 返回的图片数据无效") from exc
+    if not content:
+        raise RuntimeError("MiniMax 返回的图片内容为空")
+    if len(content) > MAX_GENERATED_IMAGE_BYTES:
+        raise RuntimeError("生成图片超过 20 MB，无法上传")
+    return content
+
+
+async def request_minimax_image(prompt: str, settings: dict) -> Tuple[bytes, str]:
+    if not settings["api_key"]:
+        raise RuntimeError("API Key 未设置，请发送 ,m api key 你的Key")
+    ratio = image_aspect_ratio(prompt)
+    response = await get_http_client().post(
+        image_endpoint(settings),
+        headers={
+            "Authorization": "Bearer " + settings["api_key"],
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "image-01",
+            "prompt": prompt[:1500],
+            "aspect_ratio": ratio,
+            "response_format": "base64",
+            "n": 1,
+            "prompt_optimizer": True,
+        },
+    )
+    if response.status_code >= 400:
+        detail = response.text[:700]
+        if response.status_code in {401, 402, 403}:
+            raise RuntimeError(
+                f"图片接口不可用（HTTP {response.status_code}），"
+                "请确认 API Key 已开通图片生成权限：" + detail
+            )
+        raise RuntimeError(f"生图 HTTP {response.status_code}：{detail}")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise RuntimeError("MiniMax 生图接口返回的不是有效 JSON") from exc
+    return generated_image_bytes(data), ratio
+
+
 async def request_minimax(
     prompt: str,
     replied_text: str,
@@ -450,6 +559,7 @@ def settings_menu(settings: dict) -> str:
         "<b>API：</b><code>" + html.escape(settings["api_url"]) + "</code>", "",
         "<b>API Key：</b>" + key_status, "",
         "<b>联网：</b>" + WEB_MODES[settings["web"]],
+        "", "<b>生图：</b>自动识别 · <code>Image</code>",
         "</blockquote>", "",
         "<b>API 设置</b>", "",
         "<code>,m api url 接口地址</code>", "",
@@ -581,6 +691,32 @@ async def send_result(
         await client.send_message(**kwargs)
 
 
+async def send_generated_image(
+    client: Client,
+    message: Message,
+    content: bytes,
+    reply_to_message_id: Optional[int] = None,
+) -> None:
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None) or getattr(message, "chat_id", None)
+    if chat_id is None:
+        raise RuntimeError("无法取得当前聊天 ID")
+    image = io.BytesIO(content)
+    image.name = "minimax-image.jpg"
+    kwargs: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "photo": image,
+        "caption": "✦ MiniMax · Image",
+        "parse_mode": enums.ParseMode.HTML,
+    }
+    if reply_to_message_id is not None:
+        kwargs["reply_to_message_id"] = reply_to_message_id
+    try:
+        await client.send_photo(**kwargs)
+    finally:
+        image.close()
+
+
 async def delete_command(message: Message) -> bool:
     try:
         await message.delete()
@@ -662,6 +798,14 @@ async def m_command(client: Client, message: Message):
         replied = await get_replied_message(client, message)
         replied_text = visible_text(replied)
         replied_id = getattr(replied, "id", None)
+        if is_image_generation_request(prompt):
+            command_deleted = await delete_command(message)
+            image_content, _ = await asyncio.wait_for(
+                request_minimax_image(prompt, settings),
+                REQUEST_TIMEOUT,
+            )
+            await send_generated_image(client, message, image_content, replied_id)
+            return
         images = await asyncio.wait_for(collect_images(client, replied), 90)
         if not prompt and not replied_text and not images:
             return await safe_edit(message, settings_menu(settings))

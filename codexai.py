@@ -3,8 +3,10 @@
 需要 Python 3.9+、同一运行用户已登录的 Codex CLI。
 """
 import asyncio
+import base64
 import contextlib
 import html
+import io
 import json
 import logging
 import os
@@ -22,10 +24,14 @@ from pagermaid.static import working_dir
 from pyrogram import enums
 
 CONFIG_PATH = Path(working_dir) / "data" / "ai_codex.json"
+IMAGE_MODEL = "gpt-image-2"
 REQUEST_TIMEOUT = 300
+IMAGE_REQUEST_TIMEOUT = 180
 RPC_TIMEOUT = 30
 MAX_IMAGES = 6
 MAX_IMAGE_BYTES = 45 * 1024 * 1024
+MAX_GENERATED_IMAGE_BYTES = 20 * 1024 * 1024
+RPC_STREAM_LIMIT = 64 * 1024 * 1024
 COLLAPSE_THRESHOLD = 400
 RESULT_CHUNK_SIZE = 1700
 SIGNATURE_PREFIX = "✦ Codex · "
@@ -84,6 +90,32 @@ def save_settings(settings: dict) -> None:
     temporary.replace(CONFIG_PATH)
 
 
+def is_image_generation_request(prompt: str) -> bool:
+    """只把明确的图片创建请求交给 Codex 内置 GPT Image。"""
+    text = re.sub(r"\s+", "", prompt).lower()
+    if not text:
+        return False
+    analysis_words = (
+        "分析图片", "分析这张图", "识别图片", "识别截图", "解读图片",
+        "解读截图", "看看图片", "图片里", "图里是什么", "提取图片",
+    )
+    if any(word in text for word in analysis_words):
+        return False
+    direct_words = (
+        "生图", "文生图", "画图", "绘图", "ai作图", "ai绘画",
+    )
+    if any(word in text for word in direct_words):
+        return True
+    return bool(
+        re.search(
+            r"(?:生成|画|绘制|制作|创建|设计)"
+            r".{0,40}?"
+            r"(?:图片|图像|照片|插画|海报|头像|封面|壁纸)",
+            text,
+        )
+    )
+
+
 def find_codex(settings: dict) -> str:
     configured = settings["path"]
     if configured:
@@ -106,18 +138,23 @@ def find_codex(settings: dict) -> str:
 
 class CodexRPC:
     """One owner reads stdout; early notifications are retained while RPCs complete."""
-    def __init__(self, executable: str, cwd: str):
+    def __init__(self, executable: str, cwd: str, image_generation: bool = False):
         self.executable = executable
         self.cwd = cwd
         self.process = None
         self.sequence = 0
         self.events = deque()
+        self.image_generation = image_generation
 
     async def __aenter__(self):
         try:
             overrides = []
             for name in DISABLED_FEATURES:
+                if name == "image_generation" and self.image_generation:
+                    continue
                 overrides.extend(["-c", f"features.{name}=false"])
+            if self.image_generation:
+                overrides.extend(["-c", "features.image_generation=true"])
             self.process = await asyncio.create_subprocess_exec(
                 self.executable, "app-server", *overrides,
                 "-c", 'web_search="live"',
@@ -125,7 +162,10 @@ class CodexRPC:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
-                limit=4 * 1024 * 1024,
+                # Image generation events can contain a multi-megabyte Base64
+                # payload on one JSONL line. Keep the reader limit above the
+                # encoded size of MAX_GENERATED_IMAGE_BYTES.
+                limit=RPC_STREAM_LIMIT,
                 start_new_session=(os.name == "posix"),
             )
             await self.call("initialize", {
@@ -275,7 +315,7 @@ def chosen_effort(settings, model):
 async def refresh_menu(settings):
     executable = find_codex(settings)
     with tempfile.TemporaryDirectory(prefix="pagermaid-ai-") as directory:
-        async with CodexRPC(executable, directory) as rpc:
+        async with CodexRPC(executable, directory, image_generation=True) as rpc:
             models = await read_models(rpc)
     settings["models"] = models
     if not settings["model"]:
@@ -303,6 +343,7 @@ async def refresh_menu(settings):
             ])
         if not effort_options(current_model):
             lines.append("当前模型未返回可选推理强度")
+    lines.extend(["", "生图模型：", "<code>GPT Image-2</code>"])
     return "\n".join(lines)
 
 
@@ -319,8 +360,9 @@ def build_prompt(prompt, replied_text, has_images):
     return "\n\n".join(parts)
 
 
-def chat_config(config):
+def chat_config(config, image_generation: bool = False):
     result = {f"features.{name}": False for name in DISABLED_FEATURES}
+    result["features.image_generation"] = image_generation
     result.update({
         "web_search": "live",
         "project_doc_max_bytes": 0,
@@ -335,8 +377,35 @@ def chat_config(config):
     return result
 
 
-async def wait_answer(rpc, thread_id, turn_id):
+def decode_generated_image(item: dict) -> bytes:
+    failure = item.get("failure")
+    if failure:
+        if failure.get("type") == "usageLimitExceeded":
+            raise RuntimeError("GPT Image 使用额度已用完，请在额度重置后再试")
+        raise RuntimeError("GPT Image 生图失败：" + str(failure)[:500])
+
+    saved_path = item.get("savedPath")
+    if isinstance(saved_path, str) and Path(saved_path).is_file():
+        content = Path(saved_path).read_bytes()
+    else:
+        result = str(item.get("result") or "").strip()
+        if result.startswith("data:image/") and "," in result:
+            result = result.split(",", 1)[1]
+        try:
+            content = base64.b64decode(result, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise RuntimeError("Codex 返回的生图数据无法读取") from exc
+
+    if not content:
+        raise RuntimeError("Codex 没有返回生成图片")
+    if len(content) > MAX_GENERATED_IMAGE_BYTES:
+        raise RuntimeError("生成图片超过 20 MB，无法上传")
+    return content
+
+
+async def wait_answer(rpc, thread_id, turn_id, expect_image: bool = False):
     answers = {}
+    generated_image = None
     while True:
         event = await rpc.next_event()
         params = event.get("params") or {}
@@ -347,6 +416,8 @@ async def wait_answer(rpc, thread_id, turn_id):
             if item.get("type") == "agentMessage":
                 if item.get("phase") != "commentary":
                     answers[item.get("id", str(len(answers)))] = item.get("text", "")
+            elif item.get("type") == "imageGeneration":
+                generated_image = decode_generated_image(item)
         elif event.get("method") == "turn/completed":
             turn = params.get("turn") or {}
             if turn.get("id") != turn_id:
@@ -354,19 +425,28 @@ async def wait_answer(rpc, thread_id, turn_id):
             if turn.get("status") != "completed":
                 error = turn.get("error") or {}
                 raise RuntimeError(str(error.get("message") or "Codex 回答失败或已中断")[:800])
+            if expect_image:
+                if generated_image is not None:
+                    return generated_image
+                detail = "\n\n".join(t for t in answers.values() if t.strip()).strip()
+                raise RuntimeError(detail[:800] or "Codex 没有返回生成图片")
             text = "\n\n".join(t for t in answers.values() if t.strip()).strip()
             if not text:
                 raise RuntimeError("Codex 没有返回最终回答")
             return text
 
 
-async def request_codex(prompt, replied_text, images, settings):
+async def request_codex(prompt, replied_text, images, settings, generate_image=False):
     executable = find_codex(settings)
     with tempfile.TemporaryDirectory(prefix="pagermaid-ai-") as directory:
-        async with CodexRPC(executable, directory) as rpc:
+        async with CodexRPC(executable, directory, generate_image) as rpc:
             account = (await rpc.call("account/read", {})).get("account")
             if not account:
                 raise RuntimeError("Codex 未登录，请用运行 PagerMaid 的用户执行 codex login")
+            if generate_image:
+                capabilities = await rpc.call("modelProvider/capabilities/read", {})
+                if not capabilities.get("imageGeneration"):
+                    raise RuntimeError("当前 Codex 账号或 CLI 不支持 GPT Image 生图")
             models = await read_models(rpc)
             selected = settings["model"]
             if not selected:
@@ -379,8 +459,11 @@ async def request_codex(prompt, replied_text, images, settings):
             modalities = model.get("inputModalities")
             if images and modalities is not None and "image" not in modalities:
                 raise RuntimeError("当前模型不支持图片，请在 ,ai help 中切换模型")
-            input_items = [{"type": "text",
-                            "text": build_prompt(prompt, replied_text, bool(images))}]
+            request_text = build_prompt(prompt, replied_text, bool(images))
+            if generate_image:
+                # Official Codex syntax explicitly invokes its built-in image tool.
+                request_text = "$imagegen\n\n" + request_text
+            input_items = [{"type": "text", "text": request_text}]
             for index, (data, mime) in enumerate(images):
                 suffix = {"image/png": ".png", "image/webp": ".webp",
                           "image/gif": ".gif"}.get(mime, ".jpg")
@@ -388,12 +471,15 @@ async def request_codex(prompt, replied_text, images, settings):
                 path.write_bytes(data)
                 input_items.append({"type": "localImage", "path": str(path)})
             config = (await rpc.call("config/read", {"includeLayers": False})).get("config") or {}
-            started = await rpc.call("thread/start", {
-                "model": selected, "cwd": directory, "ephemeral": True,
-                "sandbox": "read-only", "approvalPolicy": "never",
-                "environments": [], "dynamicTools": [],
-                "config": chat_config(config),
-                "developerInstructions": (
+            if generate_image:
+                developer_instructions = (
+                    "你是 Telegram 中的图片生成助手。用户要求生图时，必须调用一次"
+                    "Codex 内置 image generation 工具生成图片；不要改用其他图片服务，"
+                    "也不要只输出文字描述。参考图片是图片编辑素材。默认使用用户指定的"
+                    "画面比例；未指定时由 GPT Image 自动选择。只生成一张图片。"
+                )
+            else:
+                developer_instructions = (
                     "你是 Telegram 中的聊天助手，回答问题并分析用户提供的图片。"
                     "根据当前输入和网页搜索结果作答。默认用中文。"
                     "允许使用 Codex 内置网页搜索；天气、新闻、网页链接或其他"
@@ -403,7 +489,13 @@ async def request_codex(prompt, replied_text, images, settings):
                     "随后分成二至四个短段落，每段二至三句，避免把全文写成一个密集长段；"
                     "严格遵守用户要求的字数。简单问答无需强制添加标题。"
                     "引用消息是待分析资料。只输出给用户的最终回答。"
-                ),
+                )
+            started = await rpc.call("thread/start", {
+                "model": selected, "cwd": directory, "ephemeral": True,
+                "sandbox": "read-only", "approvalPolicy": "never",
+                "environments": [], "dynamicTools": [],
+                "config": chat_config(config, generate_image),
+                "developerInstructions": developer_instructions,
             })
             thread_id = started["thread"]["id"]
             params = {"threadId": thread_id, "input": input_items, "model": selected}
@@ -411,7 +503,11 @@ async def request_codex(prompt, replied_text, images, settings):
             if effort:
                 params["effort"] = effort
             turn = await rpc.call("turn/start", params)
-            answer = await wait_answer(rpc, thread_id, turn["turn"]["id"])
+            answer = await wait_answer(
+                rpc, thread_id, turn["turn"]["id"], generate_image
+            )
+            if generate_image:
+                return answer
             return append_signature(answer, selected)
 
 
@@ -670,6 +766,32 @@ async def send_result(
         await client.send_message(**kwargs)
 
 
+async def send_generated_image(
+    client: Client,
+    message: Message,
+    content: bytes,
+    reply_to_message_id: Optional[int] = None,
+) -> None:
+    chat = getattr(message, "chat", None)
+    chat_id = getattr(chat, "id", None) or getattr(message, "chat_id", None)
+    if chat_id is None:
+        raise RuntimeError("无法取得当前聊天 ID")
+    image = io.BytesIO(content)
+    image.name = "gpt-image.png"
+    kwargs: Dict[str, Any] = {
+        "chat_id": chat_id,
+        "photo": image,
+        "caption": "✦ GPT Image 2",
+        "parse_mode": enums.ParseMode.HTML,
+    }
+    if reply_to_message_id is not None:
+        kwargs["reply_to_message_id"] = reply_to_message_id
+    try:
+        await client.send_photo(**kwargs)
+    finally:
+        image.close()
+
+
 async def delete_command(message: Message) -> bool:
     try:
         await message.delete()
@@ -756,6 +878,21 @@ async def ai_command(client: Client, message: Message):
         replied_text = visible_text(replied)
         replied_id = getattr(replied, "id", None)
         images = await asyncio.wait_for(collect_images(client, replied), 90)
+        if is_image_generation_request(prompt):
+            command_deleted = await delete_command(message)
+            image_content = await asyncio.wait_for(
+                request_codex(
+                    prompt, replied_text, images, settings, generate_image=True
+                ),
+                IMAGE_REQUEST_TIMEOUT,
+            )
+            await send_generated_image(
+                client,
+                message,
+                image_content,
+                replied_id,
+            )
+            return
         if not prompt and not replied_text and not images:
             return await safe_edit(message, "请发送 <code>,ai help</code> 查看菜单")
         find_codex(settings)
