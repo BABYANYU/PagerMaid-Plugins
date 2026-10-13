@@ -18,7 +18,7 @@ from pyrogram.enums import ParseMode
 
 from pagermaid.enums import Message
 from pagermaid.listener import listener
-from pagermaid.services import scheduler
+from pagermaid.services import bot, scheduler
 from pagermaid.static import working_dir
 
 
@@ -31,6 +31,11 @@ MAX_RELEASES = 20
 TIME_ZONE = ZoneInfo("Asia/Shanghai")
 COMMAND_PATTERN = re.compile(
     r"^(?:,|，)git(?:\s+([\s\S]*))?$",
+    re.IGNORECASE,
+)
+GITHUB_URL_PATTERN = re.compile(
+    r"https?://(?:www\.)?github\.com/"
+    r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+",
     re.IGNORECASE,
 )
 _monitor_lock = asyncio.Lock()
@@ -116,6 +121,9 @@ def normalize_repository(value: str) -> str:
     if not value:
         raise ValueError("项目地址不能为空")
 
+    if value.lower().startswith(("github.com/", "www.github.com/")):
+        value = "https://" + value
+
     if "://" not in value:
         parts = value.strip("/").split("/")
     else:
@@ -146,6 +154,87 @@ def split_action(arguments: str) -> Tuple[str, str]:
         return "", ""
     action, separator, remainder = arguments.partition(" ")
     return action.lower(), remainder.strip() if separator else ""
+
+
+def is_github_project_url(value: str) -> bool:
+    return bool(re.match(
+        r"^(?:https?://)?(?:www\.)?github\.com/[^/\s]+/[^/\s]+",
+        value.strip(),
+        flags=re.I,
+    ))
+
+
+async def get_replied_message(message: Message):
+    """可靠获取被回复的完整消息，并兼容不同 PagerMaid/Pyrogram 版本。"""
+    replied = getattr(message, "reply_to_message", None)
+    reply_id = getattr(message, "reply_to_message_id", None)
+    if reply_id is None:
+        reply_id = getattr(message, "reply_to_msg_id", None)
+    if reply_id is None and replied is not None:
+        reply_id = getattr(replied, "id", None)
+
+    if reply_id is not None:
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None) or getattr(message, "chat_id", None)
+        if chat_id is not None:
+            try:
+                fetched = await bot.get_messages(
+                    chat_id=chat_id,
+                    message_ids=reply_id,
+                    replies=0,
+                )
+                if isinstance(fetched, (list, tuple)):
+                    return fetched[0] if fetched else replied
+                if fetched:
+                    return fetched
+            except Exception:
+                pass
+    return replied
+
+
+def extract_github_url(message: Message) -> str:
+    """从消息正文、媒体说明或隐藏链接中提取第一个 GitHub 项目地址。"""
+    if message is None:
+        return ""
+
+    text = (
+        getattr(message, "text", None)
+        or getattr(message, "caption", None)
+        or ""
+    )
+    match = GITHUB_URL_PATTERN.search(text)
+    if match:
+        return match.group(0).rstrip(".,;:!?)]}，。；：！？】》")
+
+    entities = (
+        getattr(message, "entities", None)
+        or getattr(message, "caption_entities", None)
+        or []
+    )
+    for entity in entities:
+        url = str(getattr(entity, "url", None) or "").strip()
+        match = GITHUB_URL_PATTERN.search(url)
+        if match:
+            return match.group(0).rstrip(".,;:!?)]}，。；：！？】》")
+    return ""
+
+
+async def add_repository(config: Dict[str, Any], value: str) -> Tuple[str, bool]:
+    """校验项目并记录当前 Release；返回项目名及是否为新添加。"""
+    repository = normalize_repository(value)
+    if repository in config["repositories"]:
+        return repository, False
+
+    releases = await fetch_releases(repository, config["github_token"])
+    config["repositories"][repository] = {
+        "initialized": True,
+        "seen_ids": [
+            int(item["id"]) for item in releases
+            if str(item.get("id", "")).isdigit()
+        ][:100],
+    }
+    save_config(config)
+    return repository, True
 
 
 def mask_secret(value: str) -> str:
@@ -394,7 +483,8 @@ def help_text(config: Dict[str, Any]) -> str:
         "<blockquote>"
         "<b>推送设置</b>　<code>,git token BotToken</code>\n\n"
         "<b>接收设置</b>　<code>,git chat ChatID</code>\n\n"
-        "<b>添加项目</b>　<code>,git add 项目链接</code>\n\n"
+        "<b>添加项目</b>　<code>,git 项目链接</code>\n\n"
+        "<b>回复添加</b>　<code>回复项目链接发送 ,git</code>\n\n"
         "<b>删除项目</b>　<code>,git del 项目编号</code>\n\n"
         "<b>检查间隔</b>　<code>,git interval 60</code>\n\n"
         "<b>监控列表</b>　<code>,git list</code>"
@@ -431,25 +521,41 @@ async def github_release_command(message: Message) -> None:
     action, value = split_action(arguments)
     config = load_config()
 
-    if not action or action in {"help", "menu"}:
+    if is_github_project_url(arguments):
+        action, value = "add", arguments
+
+    if not action:
+        replied = await get_replied_message(message)
+        if replied is not None:
+            github_url = extract_github_url(replied)
+            if not github_url:
+                await message.edit("回复消息中没有找到 GitHub 项目链接。")
+                schedule_delete(message)
+                return
+            try:
+                repository, added = await add_repository(config, github_url)
+                if not added:
+                    await message.edit(f"已在监控：{repository}")
+                else:
+                    await message.edit(f"已监控：{repository}")
+                schedule_delete(message)
+            except Exception as exc:
+                await message.edit(f"添加失败：{str(exc)[:500]}")
+            return
+
+        await edit_html(message, help_text(config))
+        return
+
+    if action in {"help", "menu"}:
         await edit_html(message, help_text(config))
         return
 
     if action == "add":
         try:
-            repository = normalize_repository(value)
-            if repository in config["repositories"]:
+            repository, added = await add_repository(config, value)
+            if not added:
                 await message.edit("该项目已经在监控列表中。")
                 return
-            releases = await fetch_releases(repository, config["github_token"])
-            config["repositories"][repository] = {
-                "initialized": True,
-                "seen_ids": [
-                    int(item["id"]) for item in releases
-                    if str(item.get("id", "")).isdigit()
-                ][:100],
-            }
-            save_config(config)
             await message.edit(f"已监控：{repository}")
             schedule_delete(message)
         except Exception as exc:
@@ -550,4 +656,3 @@ async def github_release_command(message: Message) -> None:
 
 
 register_job()
-

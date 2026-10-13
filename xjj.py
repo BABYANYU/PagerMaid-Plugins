@@ -20,7 +20,6 @@ from pagermaid.listener import listener
 from pyrogram import enums
 
 
-TITLE = "小姐姐 · 随机视频"
 REQUEST_TIMEOUT = 45
 MAX_VIDEO_BYTES = 32 * 1024 * 1024
 USER_AGENT = (
@@ -90,8 +89,6 @@ async def send_remote_video(client: Client, chat_id, url: str) -> None:
     await client.send_video(
         chat_id=chat_id,
         video=url,
-        caption=f"<b>{TITLE}</b>",
-        parse_mode=enums.ParseMode.HTML,
         supports_streaming=True,
     )
 
@@ -131,8 +128,6 @@ async def send_memory_video(client: Client, chat_id, url: str) -> None:
         await client.send_video(
             chat_id=chat_id,
             video=buffer,
-            caption=f"<b>{TITLE}</b>",
-            parse_mode=enums.ParseMode.HTML,
             supports_streaming=True,
         )
     finally:
@@ -198,7 +193,7 @@ async def random_video(client: Client, message: Message):
     if chat_id is None:
         return await safe_edit(message, "无法取得当前聊天 ID")
 
-    await safe_edit(message, "正在抓取小姐姐...")
+    await safe_edit(message, "小姐姐正在出来...")
     errors: List[str] = []
     primary_sources = [source for source in VIDEO_SOURCES if source.get("code") == "003"]
     fallback_sources = [source for source in VIDEO_SOURCES if source.get("code") != "003"]

@@ -37,7 +37,7 @@ FIAT_CODES = set(
     hrk rsd bam mkd all rub uah byn mdl try gel amd azn brl mxn ars cop pen
     clp uyu pyg bob ves gyd srd ttd jmd bbd bsd bzd crc gtq hnl nio pab dop
     htg cup sgd hkd krw inr thb myr php idr vnd lak khr mmk bnd twd mop fjd
-    pgk sbd vuv top wst lkr pkr bdt npr btn mvr afn kzt uzs kgs tjs tmt zar
+    pgk sbd vuv top wst lkr pkr bdt npr btn mvr afn kzt uzs kgs tjs tmt mnt zar
     ils aed sar qar kwd bhd omr jod lbp syp iqd irr yer egp mad dzd tnd lyd
     sdg etb ern djf sos ngn ghs xof sll lrd gmd gnf cve kes ugx tzs rwf bif
     mzn mwk zmw zwl mga mur scr kmf xaf cdf aoa stn bwp nad szl lsl
@@ -84,6 +84,78 @@ ALIASES = {
     "curve-dao-token": "crv",
     "arbitrum": "arb",
 }
+
+# 中文货币名称及常用叫法。
+CURRENCY_NAME_ALIASES = {
+    "人民币": "cny", "人民币元": "cny", "中国元": "cny", "元": "cny",
+    "美元": "usd", "美金": "usd", "欧元": "eur", "英镑": "gbp",
+    "日元": "jpy", "日币": "jpy", "加元": "cad", "加拿大元": "cad",
+    "澳元": "aud", "澳币": "aud", "新西兰元": "nzd", "纽元": "nzd",
+    "瑞士法郎": "chf", "港元": "hkd", "港币": "hkd",
+    "澳门元": "mop", "澳门币": "mop", "新台币": "twd", "台币": "twd",
+    "韩元": "krw", "韩币": "krw", "印度卢比": "inr", "卢比": "inr",
+    "泰铢": "thb", "新加坡元": "sgd", "新币": "sgd",
+    "马来西亚林吉特": "myr", "林吉特": "myr", "马币": "myr",
+    "菲律宾比索": "php", "印尼盾": "idr", "印度尼西亚盾": "idr",
+    "越南盾": "vnd", "俄罗斯卢布": "rub", "卢布": "rub",
+    "土耳其里拉": "try", "里拉": "try", "阿联酋迪拉姆": "aed",
+    "迪拉姆": "aed", "沙特里亚尔": "sar", "南非兰特": "zar",
+    "巴西雷亚尔": "brl", "墨西哥比索": "mxn",
+}
+
+# 国家或地区名称映射到当地主要流通货币。多个国家共用同一种货币时，
+# 直接映射到相同代码；具有多种法定货币的地区采用日常最常用币种。
+COUNTRY_CURRENCY_ALIASES = {
+    # 中国及周边
+    "中国": "cny", "中华人民共和国": "cny", "中国大陆": "cny", "大陆": "cny",
+    "香港": "hkd", "中国香港": "hkd", "澳门": "mop", "中国澳门": "mop",
+    "台湾": "twd", "中国台湾": "twd", "日本": "jpy", "韩国": "krw",
+    "蒙古": "mnt", "印度": "inr", "巴基斯坦": "pkr", "孟加拉国": "bdt",
+    "斯里兰卡": "lkr", "尼泊尔": "npr", "不丹": "btn", "马尔代夫": "mvr",
+    "阿富汗": "afn", "哈萨克斯坦": "kzt", "乌兹别克斯坦": "uzs",
+    "吉尔吉斯斯坦": "kgs", "塔吉克斯坦": "tjs", "土库曼斯坦": "tmt",
+    # 东南亚及大洋洲
+    "新加坡": "sgd", "马来西亚": "myr", "泰国": "thb", "印度尼西亚": "idr",
+    "印尼": "idr", "菲律宾": "php", "越南": "vnd", "老挝": "lak",
+    "柬埔寨": "khr", "缅甸": "mmk", "文莱": "bnd", "东帝汶": "usd",
+    "澳大利亚": "aud", "澳洲": "aud", "新西兰": "nzd", "斐济": "fjd",
+    "巴布亚新几内亚": "pgk", "萨摩亚": "wst", "汤加": "top",
+    # 美洲
+    "美国": "usd", "美利坚合众国": "usd", "加拿大": "cad", "墨西哥": "mxn",
+    "巴西": "brl", "阿根廷": "ars", "智利": "clp", "哥伦比亚": "cop",
+    "秘鲁": "pen", "玻利维亚": "bob", "乌拉圭": "uyu", "巴拉圭": "pyg",
+    "委内瑞拉": "ves", "厄瓜多尔": "usd", "巴拿马": "pab",
+    "哥斯达黎加": "crc", "危地马拉": "gtq", "洪都拉斯": "hnl",
+    "尼加拉瓜": "nio", "多米尼加": "dop", "古巴": "cup", "牙买加": "jmd",
+    # 欧洲
+    "英国": "gbp", "大不列颠": "gbp", "欧盟": "eur", "欧元区": "eur",
+    "德国": "eur", "法国": "eur", "意大利": "eur", "西班牙": "eur",
+    "葡萄牙": "eur", "荷兰": "eur", "比利时": "eur", "奥地利": "eur",
+    "爱尔兰": "eur", "芬兰": "eur", "希腊": "eur", "卢森堡": "eur",
+    "克罗地亚": "eur", "瑞士": "chf", "挪威": "nok", "瑞典": "sek",
+    "丹麦": "dkk", "冰岛": "isk", "波兰": "pln", "捷克": "czk",
+    "匈牙利": "huf", "罗马尼亚": "ron", "保加利亚": "bgn",
+    "塞尔维亚": "rsd", "乌克兰": "uah", "俄罗斯": "rub", "白俄罗斯": "byn",
+    "摩尔多瓦": "mdl", "土耳其": "try", "格鲁吉亚": "gel",
+    "亚美尼亚": "amd", "阿塞拜疆": "azn",
+    # 中东
+    "阿联酋": "aed", "阿拉伯联合酋长国": "aed", "沙特": "sar",
+    "沙特阿拉伯": "sar", "卡塔尔": "qar", "科威特": "kwd", "巴林": "bhd",
+    "阿曼": "omr", "约旦": "jod", "以色列": "ils", "黎巴嫩": "lbp",
+    "叙利亚": "syp", "伊拉克": "iqd", "伊朗": "irr", "也门": "yer",
+    # 非洲
+    "埃及": "egp", "南非": "zar", "尼日利亚": "ngn", "加纳": "ghs",
+    "肯尼亚": "kes", "埃塞俄比亚": "etb", "坦桑尼亚": "tzs", "乌干达": "ugx",
+    "卢旺达": "rwf", "摩洛哥": "mad", "阿尔及利亚": "dzd", "突尼斯": "tnd",
+    "利比亚": "lyd", "苏丹": "sdg", "索马里": "sos", "安哥拉": "aoa",
+    "赞比亚": "zmw", "津巴布韦": "zwl", "博茨瓦纳": "bwp",
+    "莫桑比克": "mzn", "马达加斯加": "mga", "毛里求斯": "mur",
+    "塞舌尔": "scr", "刚果金": "cdf", "刚果民主共和国": "cdf",
+    "喀麦隆": "xaf", "塞内加尔": "xof", "科特迪瓦": "xof",
+}
+
+ALIASES.update(CURRENCY_NAME_ALIASES)
+ALIASES.update(COUNTRY_CURRENCY_ALIASES)
 
 # CoinGecko ID 仅作为 Binance 不可用时的备用。
 CRYPTO_IDS = {
@@ -134,6 +206,8 @@ HELP_HTML = """<b>汇率查询</b>
 
 <b>使用示例</b>
 
+支持输入货币代码、中文货币名称或国家/地区名称。
+
 <code>,h USD</code>
 美元→人民币
 
@@ -142,6 +216,12 @@ HELP_HTML = """<b>汇率查询</b>
 
 <code>,h CNY TRY</code>
 人民币→土耳其里拉
+
+<code>,h 印度 人民币</code>
+印度卢比→人民币
+
+<code>,h 印度 中国</code>
+印度卢比→人民币
 
 <code>,h USD CNY 1</code>
 1美元 → 人民币
