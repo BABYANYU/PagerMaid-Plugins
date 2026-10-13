@@ -1,15 +1,18 @@
 """PagerMaid: 每天固定时间发送消息。
 
-版本: copy-only-v2
+版本: command-dispatch-v3
 """
 
 import asyncio
 import contextlib
 import datetime
 import html
+import logging
 from typing import List, Optional
 
 from pagermaid.listener import listener
+from pyrogram import ContinuePropagation, StopPropagation
+from pyrogram.handlers import EditedMessageHandler, MessageHandler
 
 try:
     from pagermaid.dependence import sqlite
@@ -23,6 +26,51 @@ except ImportError:
 
 DB_KEY = "ds_daily_tasks"
 JOB_PREFIX = "ds_daily"
+COMMAND_PREFIXES = (",", "，")
+
+logger = logging.getLogger(__name__)
+
+
+async def dispatch_outgoing_message(message: "Message"):
+    """将主动发送的消息交给 PagerMaid 的新消息处理器。
+
+    Pyrogram 的 ``send_message`` 会返回消息对象，但不会再次把这条消息
+    投递给本地 Dispatcher，因此仅发送 `,xjj` 只会留下普通文字。
+    这里按 Dispatcher 的分组顺序执行匹配的新消息处理器，使定时消息可以
+    像手动输入的本人消息一样触发任意 PagerMaid 指令。
+    """
+    dispatcher = bot.dispatcher
+
+    for handlers in list(dispatcher.groups.values()):
+        for handler in list(handlers):
+            # 定时发送属于“新消息”，不能调用 EditedMessageHandler，
+            # 否则同一个指令可能执行两次。
+            if not isinstance(handler, MessageHandler) or isinstance(
+                handler, EditedMessageHandler
+            ):
+                continue
+
+            try:
+                matched = await handler.check(bot, message)
+            except Exception:
+                logger.exception("检查定时指令处理器时发生异常")
+                continue
+
+            if not matched:
+                continue
+
+            try:
+                await handler.callback(bot, message)
+            except ContinuePropagation:
+                # 与 Pyrogram 一致：继续检查当前组的下一个处理器。
+                continue
+            except StopPropagation:
+                return
+            except Exception:
+                logger.exception("执行定时指令时发生异常")
+
+            # 每个分组最多执行一个匹配的处理器。
+            break
 
 
 class DailyTask:
@@ -141,8 +189,19 @@ class DailyTaskManager:
         return "\n".join(task.display() for task in self.tasks)
 
     async def send_message(self, task: DailyTask):
-        with contextlib.suppress(Exception):
-            await bot.send_message(task.cid, task.msg)
+        try:
+            sent_message = await bot.send_message(task.cid, task.msg)
+
+            # 普通文案只负责发送；逗号开头的内容继续交给 PagerMaid
+            # 指令系统处理，例如：,ds 00:00:00 | ,xjj
+            if task.msg.lstrip().startswith(COMMAND_PREFIXES):
+                await dispatch_outgoing_message(sent_message)
+        except Exception:
+            logger.exception(
+                "定时任务发送或执行失败：task_id=%s chat_id=%s",
+                task.task_id,
+                task.cid,
+            )
 
     def register(self, task: DailyTask):
         scheduler.add_job(
@@ -186,6 +245,9 @@ HELP = """每天定时发送消息
 
 新增任务：
 <code>,ds 00:00:00 | 消息内容</code>
+
+定时执行指令：
+<code>,ds 00:00:00 | ,xjj</code>
 
 获取全部任务：
 <code>,ds list</code>

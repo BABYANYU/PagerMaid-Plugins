@@ -1,4 +1,4 @@
-"""PagerMaid-Pyro：查询 Codex 最近两个月的额度重置记录。"""
+"""PagerMaid-Pyro：查询 Codex 全部额度重置记录。"""
 
 import asyncio
 import html
@@ -21,16 +21,17 @@ TIME_ZONE = ZoneInfo("Asia/Shanghai")
 REQUEST_TIMEOUT = 20
 
 
-def previous_month_start(value: datetime) -> datetime:
-    """返回上一个自然月第一天 00:00。"""
-    if value.month == 1:
-        return value.replace(
-            year=value.year - 1, month=12, day=1,
-            hour=0, minute=0, second=0, microsecond=0,
-        )
+def months_ago_start(value: datetime, months: int) -> datetime:
+    """返回指定月数之前的自然月第一天 00:00。"""
+    month_index = value.year * 12 + value.month - 1 - months
     return value.replace(
-        month=value.month - 1, day=1,
-        hour=0, minute=0, second=0, microsecond=0,
+        year=month_index // 12,
+        month=month_index % 12 + 1,
+        day=1,
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
     )
 
 
@@ -115,25 +116,11 @@ def parse_announcement_time(value: Any) -> datetime | None:
         return None
 
 
-def format_records(records: List[Dict[str, Any]]) -> str:
-    parsed = []
-    for record in records:
-        announced_at = parse_announcement_time(record.get("announced_at"))
-        if announced_at is not None:
-            parsed.append((announced_at, record))
-    parsed.sort(key=lambda item: item[0], reverse=True)
-
-    month_counts: Dict[str, int] = {}
-    for announced_at, _ in parsed:
-        month_key = announced_at.strftime("%Y-%m")
-        month_counts[month_key] = month_counts.get(month_key, 0) + 1
-
-    lines = [
-        "<b>✦ Codex Reset History</b>",
-        "",
-        "<blockquote>",
-    ]
-
+def format_months(
+    parsed: List[tuple[datetime, Dict[str, Any]]],
+    month_counts: Dict[str, int],
+) -> List[str]:
+    lines: List[str] = []
     current_month = ""
     for announced_at, record in parsed:
         month_key = announced_at.strftime("%Y-%m")
@@ -152,10 +139,38 @@ def format_records(records: List[Dict[str, Any]]) -> str:
             f"<code>{announced_at:%m-%d %H:%M}</code>  "
             f"{html.escape(reset_type)}"
         )
+    return lines
 
+
+def format_records(records: List[Dict[str, Any]], now: datetime) -> str:
+    parsed = []
+    for record in records:
+        announced_at = parse_announcement_time(record.get("announced_at"))
+        if announced_at is not None:
+            parsed.append((announced_at, record))
+    parsed.sort(key=lambda item: item[0], reverse=True)
+
+    month_counts: Dict[str, int] = {}
+    for announced_at, _ in parsed:
+        month_key = announced_at.strftime("%Y-%m")
+        month_counts[month_key] = month_counts.get(month_key, 0) + 1
+
+    recent_start = months_ago_start(now, 2)
+    recent = [item for item in parsed if item[0] >= recent_start]
+    older = [item for item in parsed if item[0] < recent_start]
+
+    lines = ["<b>✦ Codex Reset History</b>", ""]
+    if recent:
+        lines.append("<blockquote>")
+        lines.extend(format_months(recent, month_counts))
+        lines.append("</blockquote>")
+    if older:
+        lines.append("<blockquote expandable>")
+        lines.extend(format_months(older, month_counts))
+        lines.append("</blockquote>")
     if not parsed:
-        lines.extend(["", "近两个月没有重置记录。"])
-    lines.extend(["</blockquote>", "", "<b>✦ YanyuBot</b>"])
+        lines.extend(["<blockquote>", "没有重置记录。", "</blockquote>"])
+    lines.extend(["", "<b>✦ YanyuBot</b>"])
     return "\n".join(lines)
 
 
@@ -163,15 +178,18 @@ def format_records(records: List[Dict[str, Any]]) -> str:
     is_plugin=True,
     outgoing=True,
     command="cz",
-    description="查询 Codex 最近两个月的额度重置记录。",
+    description="查询 Codex 全部额度重置记录。",
 )
 async def codex_reset_history(client: Client, message: Message) -> None:
     del client
     now = datetime.now(TIME_ZONE)
-    start = previous_month_start(now)
+    start = datetime(1970, 1, 1, tzinfo=TIME_ZONE)
     try:
         records = await fetch_resets(start, now)
-        await message.edit(format_records(records), parse_mode=ParseMode.HTML)
+        await message.edit(
+            format_records(records, now),
+            parse_mode=ParseMode.HTML,
+        )
     except Exception as exc:
         await message.edit(
             f"查询失败：{html.escape(str(exc))}",
