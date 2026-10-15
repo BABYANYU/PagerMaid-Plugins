@@ -1,4 +1,4 @@
-"""Delete self-authored messages from the current chat."""
+"""删除当前聊天中自己的消息；收藏夹支持清理转存及转发消息。"""
 
 import contextlib
 
@@ -9,21 +9,25 @@ from pagermaid.listener import listener
 RUNNING_TASKS = set()
 
 
-async def delete_with_progress(bot: Client, message: Message, message_ids):
+async def delete_with_progress(bot: Client, message: Message, message_ids, saved=False):
     """Delete messages while updating one temporary progress message."""
     unique_ids = list(dict.fromkeys(message_ids))
     total = len(unique_ids)
-    notification = await bot.send_message(
-        message.chat.id,
-        f"正在清理 · 0/{total}",
-        message_thread_id=getattr(message, "message_thread_id", None),
-    )
+    target = "me" if saved else message.chat.id
+    options = {}
+    thread_id = getattr(message, "message_thread_id", None)
+    if thread_id is not None and not saved:
+        options["message_thread_id"] = thread_id
+    notification = await bot.send_message(target, f"正在清理 · 0/{total}", **options)
     batch_size = 1 if total <= 20 else 5 if total <= 100 else 20
     completed = 0
     try:
         for start in range(0, total, batch_size):
             batch = unique_ids[start : start + batch_size]
-            await bot.delete_messages(message.chat.id, batch)
+            affected = await bot.delete_messages(target, batch)
+            if affected == 0:
+                # 未确认删除时停止本轮，静默退出，不误报已完成数量。
+                return
             completed += len(batch)
             with contextlib.suppress(Exception):
                 await notification.edit(f"正在清理 · {completed}/{total}")
@@ -37,7 +41,7 @@ async def delete_with_progress(bot: Client, message: Message, message_ids):
     outgoing=True,
     command="d",
     need_admin=False,
-    description="删除自己在当前群内的全部消息，或指定数量的最新消息。",
+    description="删除当前聊天中自己的消息，收藏夹支持删除保存的消息。",
     parameters="[数量]",
     priority=1,
     block_process=True,
@@ -65,16 +69,36 @@ async def dme(bot: Client, message: Message):
     RUNNING_TASKS.add(task_key)
     try:
         message_ids = []
-        async for item in bot.search_messages(chat_id, from_user="me"):
+        me = getattr(bot, "me", None)
+        if me is None:
+            me = await bot.get_me()
+        saved = chat_id == me.id
+        # 明确使用 InputPeerSelf 对应的 "me"，从命令之前读取收藏夹。
+        # 收藏夹不按发送者过滤；其他聊天仍只搜索自己的消息。
+        history = (
+            bot.get_chat_history("me", offset_id=command_id)
+            if saved
+            else bot.search_messages(chat_id, from_user="me")
+        )
+        async for item in history:
             item_id = getattr(item, "id", None)
-            if item_id is None or item_id == command_id:
+            if item_id is None or item_id == command_id or getattr(item, "empty", False):
                 continue
             message_ids.append(item_id)
             if requested is not None and len(message_ids) >= requested:
                 break
 
+        if not message_ids:
+            # 没有自己的历史消息属于正常空结果，静默清理命令即可。
+            with contextlib.suppress(Exception):
+                await message.delete()
+            return
+        await delete_with_progress(bot, message, message_ids, saved=saved)
         with contextlib.suppress(Exception):
             await message.delete()
-        await delete_with_progress(bot, message, message_ids)
+    except Exception as exc:
+        # 命令保留至目标删除完成，失败时仍有可编辑的消息承载诊断。
+        detail = str(exc).replace("\n", " ")[:240]
+        await message.edit(f"清理未完成 · {type(exc).__name__}\n{detail}")
     finally:
         RUNNING_TASKS.discard(task_key)
