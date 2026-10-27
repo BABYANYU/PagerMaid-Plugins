@@ -39,21 +39,60 @@ class BootDataParser(HTMLParser):
         self.collect = False
         self.parts = []
         self.found = False
+        self.shop_details = {}
+        self._shop_row = None
+        self._article_depth = 0
+        self._shop_name_parts = None
 
     def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
         if tag == "script":
-            attrs = dict(attrs)
             self.collect = attrs.get("id") == "boot-data" and attrs.get("type") == "application/json"
             if self.collect:
                 self.found = True
+        if tag == "article":
+            if self._shop_row is not None:
+                self._article_depth += 1
+            elif {"floor-row", "sku-quote"}.issubset(set(attrs.get("class", "").split())) and attrs.get("data-row"):
+                self._shop_row = {"shop_token": attrs["data-row"]}
+                self._article_depth = 1
+        if self._shop_row is not None:
+            if tag == "h3" and not self._shop_row.get("shop_name"):
+                title = attrs.get("title", "").strip()
+                if title:
+                    self._shop_row["shop_name"] = title
+                self._shop_name_parts = []
+            elif tag == "a" and attrs.get("data-shop-id") == self._shop_row["shop_token"]:
+                if attrs.get("data-merchant-click") == "sku_quote":
+                    self._shop_row["item_url"] = attrs.get("href")
+                    self._shop_row["sku"] = attrs.get("data-sku")
 
     def handle_endtag(self, tag):
         if tag == "script":
             self.collect = False
+        if tag == "h3" and self._shop_row is not None and self._shop_name_parts is not None:
+            if not self._shop_row.get("shop_name"):
+                self._shop_row["shop_name"] = " ".join("".join(self._shop_name_parts).split())
+            self._shop_name_parts = None
+        if tag == "article" and self._shop_row is not None:
+            self._article_depth -= 1
+            if self._article_depth == 0:
+                token = self._shop_row["shop_token"]
+                self.shop_details[token] = self._shop_row
+                self._shop_row = None
+                self._shop_name_parts = None
 
     def handle_data(self, data):
         if self.collect:
             self.parts.append(data)
+        if self._shop_name_parts is not None:
+            self._shop_name_parts.append(data)
+
+    def handle_entityref(self, name):
+        self.handle_data(html.unescape("&" + name + ";"))
+
+    def handle_charref(self, name):
+        self.handle_data(html.unescape("&#" + name + ";"))
 
 
 def parse_page(document, sku):
@@ -82,6 +121,12 @@ def parse_page(document, sku):
             continue
         row = dict(quote)
         row["price"] = price
+        # 新版网页不再把名称和链接放进 boot-data；与网站前端一样按编号补全。
+        details = parser.shop_details.get(str(row.get("shop_token") or ""), {})
+        if details.get("sku") in (None, sku):
+            for key in ("shop_name", "item_url", "shop_url"):
+                if not row.get(key) and details.get(key):
+                    row[key] = details[key]
         rows.append(row)
     rows.sort(key=lambda row: (row["price"], str(row.get("shop_name") or "")))
     if not rows:
@@ -131,7 +176,7 @@ def safe_url(value):
 
 
 def quote_text(row, index):
-    name = escaped(row.get("shop_name") or "未命名店铺", 45)
+    name = escaped(row.get("shop_name") or row.get("shop_token") or "店铺信息暂缺", 45)
     link = safe_url(row.get("item_url")) or safe_url(row.get("shop_url"))
     shop = '<a href="%s">%s</a>' % (link, name) if link else name
     price = format(row["price"], "f")
