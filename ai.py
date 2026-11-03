@@ -1144,7 +1144,7 @@ def numeric(value):
 
 def window_text(window, fallback):
     if not isinstance(window, dict):
-        return "<blockquote><b>" + html.escape(fallback) + "</b>\n额度未返回</blockquote>"
+        return "<blockquote><b>" + html.escape(fallback) + "</b>\n\n额度未返回</blockquote>"
     duration = numeric(window.get("limit_window_seconds"))
     title = fallback
     if duration and duration > 0:
@@ -1155,13 +1155,13 @@ def window_text(window, fallback):
         else:
             title = "%g 分钟额度" % (duration / 60)
     used = numeric(window.get("used_percent"))
-    text = "<b>" + html.escape(title) + "</b>\n"
+    text = "<b>" + html.escape(title) + "</b>\n\n"
     text += ("剩余 <b>%g%%</b>" % (100 - min(100, max(0, used)))
              if used is not None else "额度未返回")
     reset = numeric(window.get("reset_at"))
     if reset is not None:
         try:
-            text += "\n重置时间：" + datetime.fromtimestamp(reset, TZ).strftime("%m-%d %H:%M")
+            text += "\n\n重置时间：" + datetime.fromtimestamp(reset, TZ).strftime("%m-%d %H:%M")
         except (ValueError, OverflowError, OSError):
             pass
     return "<blockquote>" + text + "</blockquote>"
@@ -1190,9 +1190,9 @@ def format_usage(data):
     reset_credits = data.get("rate_limit_reset_credits")
     count = numeric(reset_credits.get("available_count")) if isinstance(reset_credits, dict) else None
     if count is not None and count >= 0 and count.is_integer():
-        reset_text = "<b>重置卡 · {} 张</b>".format(int(count))
+        reset_text = "<b>重置卡：{} 张</b>".format(int(count))
     else:
-        reset_text = "<b>重置卡 · 数量未返回</b>"
+        reset_text = "<b>重置卡：数量未返回</b>"
     lines.extend(["", "<blockquote>" + reset_text + "</blockquote>"])
     return "<b>Codex 额度</b>\n\n" + "\n".join(lines)
 
