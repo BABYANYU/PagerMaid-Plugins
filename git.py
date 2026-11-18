@@ -24,7 +24,7 @@ from pagermaid.static import working_dir
 
 CONFIG_PATH = Path(working_dir) / "data" / "github_release_monitor.json"
 JOB_ID = "pagermaid_github_release_monitor"
-DEFAULT_CHAT_ID = ""
+DEFAULT_CHAT_ID = ""  # set chat_id in the plugin config; no personal default
 DEFAULT_INTERVAL_MINUTES = 60
 REQUEST_TIMEOUT = 20
 MAX_RELEASES = 20
