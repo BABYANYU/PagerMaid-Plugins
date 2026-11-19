@@ -4,7 +4,7 @@
 
 ## 安装前准备
 
-1. 部署并启动已完成 Telegram 登录配置的 PagerMaid-Pyro；安装插件的命令由运行该实例的账号发送。
+1. 部署并启动已完成 Telegram 登录配置的 [PagerMaid-Pyro](https://github.com/TeamPGM/PagerMaid-Pyro)；安装插件的命令由运行该实例的账号发送。
 2. 确认插件需要的 Python 版本、Python 包、外部命令行工具及服务凭据。请先阅读所选插件源文件开头的说明和首次运行时显示的菜单；插件依赖应安装到运行 PagerMaid-Pyro 的同一 Python 环境。
 3. 插件在 PagerMaid-Pyro 服务器进程中运行。需要 CLI 登录态的插件，应由启动机器人进程的同一系统用户完成登录。
 4. [codexai.py](codexai.py) 明确要求 Python 3.9+ 和 Codex CLI；CLI 必须在 PagerMaid-Pyro 服务器上可用，并以运行机器人进程的系统用户登录。
