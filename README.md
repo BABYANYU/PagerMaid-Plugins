@@ -1,6 +1,6 @@
 # PagerMaid-Pyro 插件集
 
-面向 [PagerMaid-Pyro](https://github.com/TeamPGM/PagerMaid-Pyro) 的个人插件集合，涵盖 AI 助手、消息处理、订阅与网络工具、日常自动化等功能。每个插件均以独立的 Python 文件提供；本页按用途整理插件入口，保留各插件原有说明。
+适用于 PagerMaid-Pyro 的个人插件集合，涵盖 AI 助手、消息处理、订阅与网络工具、日常自动化等功能。每个插件均以独立的 Python 文件提供；本页按用途整理插件入口。
 
 ## 安装前准备
 
@@ -19,7 +19,7 @@
 ,apt install
 ```
 
-安装器依据附件文件名将插件放入 PagerMaid-Pyro 的 `plugins` 目录并刷新已加载插件；因此请保留原始 `.py` 扩展名。也可把 `.py` 文件附在包含命令的同一条消息中。此行为与上游 [`pagermaid/modules/plugin.py`](https://github.com/TeamPGM/PagerMaid-Pyro/blob/master/pagermaid/modules/plugin.py) 的附件处理逻辑一致。
+内置安装器依据附件文件名将插件放入 PagerMaid-Pyro 的 `plugins` 目录并刷新已加载插件；请保留原始 `.py` 扩展名。也可把 `.py` 文件附在包含命令的同一条消息中。
 
 ### 方法二：使用本仓库的 `pm.py`
 
@@ -54,7 +54,7 @@
 - [deepseek.py](deepseek.py) 与 [ds.py](ds.py) 都注册 `,ds`；同时只加载其中一个。
 - [minimax.py](minimax.py) 使用 `,m`；可与上述 Codex AI 插件共存。
 
-上述命令和附件要求依据本仓库 [pm.py](pm.py)、[ds.py](ds.py)、[deepseek.py](deepseek.py) 及上游插件管理器实现整理。
+安装、更新或卸载后，可用 `,apt status` 检查插件状态。
 
 ## 插件目录
 
@@ -64,12 +64,12 @@
 | --- | --- |
 | [ai.py](ai.py) | ChatGPT 日常问答助手，支持回复消息、图片输入、模型及推理强度选择，以及 Codex 额度查询。 |
 | [codex.py](codex.py) | 查询 Codex 使用额度、额度窗口及可用重置次数。 |
-| [codexai.py](codexai.py) | 基于已登录的 Codex CLI 提供 AI 对话，支持上下文、图片分析、图片生成及模型设置。 |
+| [codexai.py](codexai.py) | 使用已登录的 Codex CLI 提供 AI 对话，支持上下文、图片分析、图片生成及模型设置。 |
 | [cz.py](cz.py) | 查询第三方数据源提供的全部 Codex 额度重置记录，按月份区分普通与储备重置，较早记录折叠展示。 |
 | [deepseek.py](deepseek.py) | DeepSeek 官方 API 问答助手，支持联网查询、回复消息分析、按序号选择模型及查询余额。 |
 | [gp.py](gp.py) | 通过 ChatGPT OAuth 登录提供问答，支持回复上下文、图片输入、模型与推理强度选择。 |
 | [minimax.py](minimax.py) | MiniMax AI 助手，支持文字问答、回复内容分析、图片理解、联网查询和图片生成。 |
-| [nq.py](nq.py) | 基于 Codex 的群聊自动回复，可按全群或指定成员启用，并管理模型、推理强度及上下文。 |
+| [nq.py](nq.py) | 使用 Codex 提供群聊自动回复，可按全群或指定成员启用，并管理模型、推理强度及上下文。 |
 | [zj.py](zj.py) | 使用 MiniMax 总结当前群聊当天的消息，整理话题与重点信息。 |
 
 > [ai.py](ai.py)、[gp.py](gp.py) 和 [codexai.py](codexai.py) 共用 `,ai` 命令；请只加载其中一个，详见上方[命令冲突](#命令冲突)说明。
@@ -114,6 +114,6 @@
 | [zhuanhuan.py](zhuanhuan.py) | 将节点或订阅链接转换为 Clash 与 Surge 可用的订阅链接。 |
 | [zt.py](zt.py) | 查看 CPU、内存、插件数量、运行时间、Telegram DC 及网络延迟等运行状态。 |
 
-## 许可与致谢
+## 许可
 
-本项目许可信息见 [LICENSE](LICENSE)。插件集面向 [PagerMaid-Pyro](https://github.com/TeamPGM/PagerMaid-Pyro)；感谢上游项目及其贡献者提供机器人框架与插件运行环境。
+本仓库及各插件的许可信息见 [LICENSE](LICENSE)；文件内嵌的第三方字体保留其原有许可声明。
