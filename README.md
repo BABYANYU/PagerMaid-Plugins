@@ -111,11 +111,13 @@
 | [ip.py](ip.py) | 查询 IP 或域名的地理位置、ISP、组织、ASN 与路由信息。 |
 | [jg.py](jg.py) | 分别查询 ChatGPT Plus 月付直充与 Claude Pro 报价，按价格升序展示前 10 家店铺。 |
 | [dy.py](dy.py) | 查询 App 订阅及内购项目最便宜的 10 个地区，支持按项目序号选择。 |
-| [lianjie.py](lianjie.py) | 将代理节点或节点配置转换为 Mihomo YAML 订阅，并上传生成短链接。 |
+| [lianjie.py](lianjie.py) | `,lj` 将节点或配置文件转为 Mihomo YAML，发布永久订阅链接。 |
 | [LL.py](LL.py) | 调用指定 Telegram Bot 分析 URL、执行 Ping 测试，并转发图片结果。 |
 | [speedtest.py](speedtest.py) | 使用 Ookla 测试服务器上传、下载与延迟，支持自动选择或指定服务器，并输出测速图卡。 |
-| [zhuanhuan.py](zhuanhuan.py) | 将节点或订阅链接转换为 Clash 与 Surge 可用的订阅链接。 |
+| [zhuanhuan.py](zhuanhuan.py) | `,z` 一行返回 Mihomo 与 Surge 永久订阅链接。输入机场订阅时，客户端刷新会重新读取上游。 |
 | [zt.py](zt.py) | 查看 CPU、内存、插件数量、运行时间、Telegram DC 及网络延迟等运行状态。 |
+
+> 订阅转换插件使用 YANYU Sub 的鉴权发布接口，运行前需在 PagerMaid 工作目录的 `data/yanyu_sub_plugin.token` 配置由站点维护者提供的令牌。
 
 ## 许可
 

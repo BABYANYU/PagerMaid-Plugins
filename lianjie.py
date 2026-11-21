@@ -4,6 +4,7 @@ import base64
 import html
 import json
 import re
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import yaml
@@ -12,10 +13,11 @@ from pyrogram import enums
 from pagermaid.enums import Client, Message
 from pagermaid.listener import listener
 from pagermaid.services import client as http_client
+from pagermaid.static import working_dir
 
 
-UPLOAD_URL = "https://fakeyou.eu.org/"
-UPLOAD_EXPIRATION = "365d"
+UPLOAD_URL = "https://sub.fakeyou.eu.org/api/plugin/publish"
+TOKEN_PATH = Path(working_dir) / "data" / "yanyu_sub_plugin.token"
 REQUEST_TIMEOUT = 30.0
 
 TYPE_ALIASES = {
@@ -558,15 +560,18 @@ async def read_reply_content(bot, message):
 
 
 async def upload_yaml(yaml_text):
+    try:
+        token = TOKEN_PATH.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        token = ""
+    if not re.fullmatch(r"[0-9a-f]{64}", token):
+        raise ConvertError("未配置 YANYU Sub 插件令牌")
     response = await http_client.post(
         UPLOAD_URL,
-        files={
-            "c": (None, yaml_text),
-            "e": (None, UPLOAD_EXPIRATION),
-        },
-        headers={"User-Agent": "PagerMaid-Mihomo-YAML/1.0"},
+        json={"target": "Mihomo", "content": yaml_text},
+        headers={"Authorization": "Bearer " + token, "User-Agent": "YanyuSub-PagerMaid/1.0"},
         timeout=REQUEST_TIMEOUT,
-        follow_redirects=True,
+        follow_redirects=False,
     )
     if response.status_code not in {200, 201}:
         raise ConvertError("上传失败，HTTP %s" % response.status_code)
@@ -575,7 +580,7 @@ async def upload_yaml(yaml_text):
     except Exception as exc:
         raise ConvertError("上传接口返回了无效数据") from exc
     short_url = str(data.get("url") or "").strip() if isinstance(data, dict) else ""
-    if not re.fullmatch(r"https://fakeyou\.eu\.org/[A-Za-z0-9_-]+", short_url):
+    if not re.fullmatch(r"https://sub\.fakeyou\.eu\.org/s/[A-Za-z0-9]{8}", short_url):
         raise ConvertError("上传接口没有返回有效短链接")
     return short_url
 
