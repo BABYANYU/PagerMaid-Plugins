@@ -193,7 +193,7 @@ class DailyTaskManager:
             sent_message = await bot.send_message(task.cid, task.msg)
 
             # 普通文案只负责发送；逗号开头的内容继续交给 PagerMaid
-            # 指令系统处理，例如：,ds 00:00:00 | ,xjj
+            # 指令系统处理，例如：,dingshi 00:00:00 | ,xjj
             if task.msg.lstrip().startswith(COMMAND_PREFIXES):
                 await dispatch_outgoing_message(sent_message)
         except Exception:
@@ -244,21 +244,21 @@ manager.register_all()
 HELP = """每天定时发送消息
 
 新增任务：
-<code>,ds 00:00:00 | 消息内容</code>
+<code>,dingshi 00:00:00 | 消息内容</code>
 
 定时执行指令：
-<code>,ds 00:00:00 | ,xjj</code>
+<code>,dingshi 00:00:00 | ,xjj</code>
 
 获取全部任务：
-<code>,ds list</code>
+<code>,dingshi list</code>
 
 删除任务：
-<code>,ds rm</code>
+<code>,dingshi rm</code>
 """
 
 
 @listener(
-    command="ds",
+    command="dingshi",
     need_admin=True,
     description="每天固定时间发送消息",
 )
@@ -268,7 +268,7 @@ async def ds(message: Message):
     if not args:
         return await message.edit(HELP)
 
-    # 在任意群执行 ,ds list，都显示全部已注册任务；3 秒后自动删除。
+    # 在任意群执行 ,dingshi list，都显示全部已注册任务；3 秒后自动删除。
     if args == "list":
         text = manager.list_all()
         if not text:
@@ -281,12 +281,12 @@ async def ds(message: Message):
 
     # 删除任务：任务 ID 全局有效，可在任意群删除。
     if args == "rm":
-        return await message.edit("<code>,ds rm 任务ID</code>")
+        return await message.edit("<code>,dingshi rm 任务ID</code>")
 
     if args.startswith("rm "):
         parts = args.split()
         if len(parts) != 2:
-            return await message.edit("<code>,ds rm 任务ID</code>")
+            return await message.edit("<code>,dingshi rm 任务ID</code>")
 
         try:
             task_id = int(parts[1])

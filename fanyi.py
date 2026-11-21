@@ -378,21 +378,19 @@ async def _translate_reply(
             f"{type(error).__name__}"
         )
 
-    if (
-        len(translated)
-        > MAX_TELEGRAM_TEXT
-    ):
+    suffix = "\n\n✦  DeepL"
+    limit = MAX_TELEGRAM_TEXT - len(suffix)
+
+    if len(translated) > limit:
 
         translated = (
-            translated[
-                :MAX_TELEGRAM_TEXT - 1
-            ]
+            translated[:limit - 1]
             + "…"
         )
 
     return await _edit_plain(
         message,
-        translated,
+        translated + suffix,
     )
 
 

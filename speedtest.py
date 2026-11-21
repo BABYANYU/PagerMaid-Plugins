@@ -286,8 +286,82 @@ def load_card_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
 
 
 def create_result_card(result: Dict[str, Any]) -> Optional[Path]:
+    import math
+
+    class SmoothDraw:
+        """Antialias local geometry in bounded tiles; leave text on its native pixel grid."""
+        def __init__(self, target):
+            self.target = target
+            self.native = ImageDraw.Draw(target)
+
+        def __getattr__(self, name):
+            return getattr(self.native, name)
+
+        def geometry(self, kind, xy, **kwargs):
+            scale = 3
+            pad = max(4, math.ceil(kwargs.get('width', 1) / 2) + 3)
+            points = list(xy)
+            if points and isinstance(points[0], (tuple, list)):
+                points = [coordinate for pair in points for coordinate in pair]
+            xs, ys = points[::2], points[1::2]
+            left = max(0, math.floor(min(xs)) - pad)
+            top = max(0, math.floor(min(ys)) - pad)
+            right = min(self.target.width, math.ceil(max(xs)) + pad + 1)
+            bottom = min(self.target.height, math.ceil(max(ys)) + pad + 1)
+            if right <= left or bottom <= top:
+                return
+            for y in range(top, bottom, 128):
+                y_end = min(y + 128, bottom)
+                for x in range(left, right, 256):
+                    x_end = min(x + 256, right)
+                    # Opaque, flat card interiors need no supersampling or temporary image.
+                    inset = kwargs.get('radius', 0) + kwargs.get('width', 1) + pad
+                    if (kind == 'rounded_rectangle' and kwargs.get('fill') is not None
+                            and x >= min(xs) + inset and x_end - 1 <= max(xs) - inset
+                            and y >= min(ys) + inset and y_end - 1 <= max(ys) - inset):
+                        self.native.rectangle((x, y, x_end - 1, y_end - 1), fill=kwargs['fill'])
+                        continue
+                    render_left, render_top = max(0, x-pad), max(0, y-pad)
+                    render_right = min(self.target.width, x_end+pad)
+                    render_bottom = min(self.target.height, y_end+pad)
+                    coords = [(value - (render_left if i % 2 == 0 else render_top)) * scale
+                              for i, value in enumerate(points)]
+                    if kind == 'line':
+                        coords = list(zip(coords[::2], coords[1::2]))
+                    options = dict(kwargs)
+                    for key in ('radius', 'width'):
+                        if key in options:
+                            options[key] *= scale
+                    with Image.new('RGBA', ((render_right-render_left)*scale,
+                                           (render_bottom-render_top)*scale)) as layer:
+                        getattr(ImageDraw.Draw(layer), kind)(coords, **options)
+                        with layer.resize((render_right-render_left, render_bottom-render_top),
+                                          Image.Resampling.LANCZOS) as smooth:
+                            with smooth.crop((x-render_left, y-render_top,
+                                              x_end-render_left, y_end-render_top)) as tile:
+                                self.target.alpha_composite(tile, (x, y))
+
+        def rounded_rectangle(self, xy, **kwargs):
+            self.geometry('rounded_rectangle', xy, **kwargs)
+
+        def ellipse(self, xy, **kwargs):
+            self.geometry('ellipse', xy, **kwargs)
+
+        def line(self, xy, **kwargs):
+            points = list(xy)
+            pairs = points if isinstance(points[0], (tuple, list)) else list(zip(points[::2], points[1::2]))
+            if len({p[0] for p in pairs}) == 1 or len({p[1] for p in pairs}) == 1:
+                self.native.line(xy, **kwargs)
+            else:
+                self.geometry('line', xy, **kwargs)
+
+        def arc(self, xy, start, end, **kwargs):
+            self.geometry('arc', xy, start=start, end=end, **kwargs)
+
+
     ensure_directories()
     image_path = TEMP_DIR / f"speedtest_{uuid.uuid4().hex}.png"
+    image = ambient = glow = None
     try:
         server = result.get("server") or {}
         ping = result.get("ping") or {}
@@ -323,9 +397,14 @@ def create_result_card(result: Dict[str, Any]) -> Optional[Path]:
         ambient_draw = ImageDraw.Draw(ambient)
         ambient_draw.ellipse((10, 190, 610, 760), fill=(0, 196, 255, 34))
         ambient_draw.ellipse((590, 190, 1190, 760), fill=(132, 82, 255, 34))
-        ambient = ambient.filter(ImageFilter.GaussianBlur(95))
-        image = Image.alpha_composite(image, ambient)
-        draw = ImageDraw.Draw(image)
+        with ambient.filter(ImageFilter.GaussianBlur(95)) as blurred:
+            composed = Image.alpha_composite(image, blurred)
+        del ambient_draw
+        ambient.close()
+        ambient = None
+        image.close()
+        image = composed
+        draw = SmoothDraw(image)
 
         white = "#f8fafc"
         muted = "#8290a8"
@@ -333,41 +412,49 @@ def create_result_card(result: Dict[str, Any]) -> Optional[Path]:
         violet = "#9b70ff"
         line = "#172236"
 
-        title_font = load_card_font(58, bold=True)
-        subtitle_font = load_card_font(18, bold=True)
-        label_font = load_card_font(21, bold=True)
-        body_font = load_card_font(32, bold=True)
-        unit_font = load_card_font(28, bold=True)
+        fonts = {}
+
+        def card_font(size: int, bold: bool = False):
+            key = size, bold
+            if key not in fonts:
+                fonts[key] = load_card_font(size, bold=bold)
+            return fonts[key]
+
+        title_font = card_font(58, bold=True)
+        subtitle_font = card_font(18, bold=True)
+        label_font = card_font(21, bold=True)
+        body_font = card_font(32, bold=True)
+        unit_font = card_font(28, bold=True)
 
         def text_width(text: str, font: ImageFont.ImageFont) -> int:
             box = draw.textbbox((0, 0), text, font=font)
             return box[2] - box[0]
 
         def centered(text: str, center_x: int, y: int, font, fill: str) -> None:
-            draw.text((center_x - text_width(text, font) / 2, y), text, font=font, fill=fill)
+            draw.text((round(center_x - text_width(text, font) / 2), y), text, font=font, fill=fill)
 
         def fitted_font(text: str, maximum_width: int, start: int = 32):
             for size in range(start, 21, -1):
-                font = load_card_font(size, bold=True)
+                font = card_font(size, bold=True)
                 if text_width(text, font) <= maximum_width:
                     return font
-            return load_card_font(21, bold=True)
+            return card_font(21, bold=True)
 
         def fitted_value_font(*values: str) -> ImageFont.ImageFont:
             # Both metrics use the same font size. This keeps the layout
             # balanced while preventing 4+ digit Mbps values from overflowing.
             for size in range(92, 55, -2):
-                candidate = load_card_font(size, bold=True)
+                candidate = card_font(size, bold=True)
                 if all(text_width(value, candidate) <= 390 for value in values):
                     return candidate
-            return load_card_font(54, bold=True)
+            return card_font(54, bold=True)
 
         value_font = fitted_value_font(down_text, up_text)
 
         brand_left = "Yanyu"
         brand_right = "Bot"
         brand_width = text_width(brand_left, title_font) + text_width(brand_right, title_font)
-        brand_x = (1200 - brand_width) / 2
+        brand_x = round((1200 - brand_width) / 2)
         draw.text((brand_x, 20), brand_left, font=title_font, fill=white)
         draw.text(
             (brand_x + text_width(brand_left, title_font), 20),
@@ -408,10 +495,14 @@ def create_result_card(result: Dict[str, Any]) -> Optional[Path]:
         glow_draw = ImageDraw.Draw(glow)
         for box, color in zip(arc_boxes, arc_colors):
             glow_draw.arc(box, 180, 360, fill=color, width=10)
-        image = Image.alpha_composite(
-            image, glow.filter(ImageFilter.GaussianBlur(16))
-        )
-        draw = ImageDraw.Draw(image)
+        with glow.filter(ImageFilter.GaussianBlur(16)) as blurred:
+            composed = Image.alpha_composite(image, blurred)
+        del glow_draw
+        glow.close()
+        glow = None
+        image.close()
+        image = composed
+        draw = SmoothDraw(image)
         for box, color in zip(arc_boxes, arc_colors):
             draw.arc(box, 180, 360, fill=color, width=5)
 
@@ -423,11 +514,16 @@ def create_result_card(result: Dict[str, Any]) -> Optional[Path]:
         centered(up_text, 900, 350, value_font, white)
         centered("Mbps", 900, 465, unit_font, muted)
 
-        image.convert("RGB").save(image_path, "PNG", optimize=True)
+        with image.convert("RGB") as rgb:
+            rgb.save(image_path, "PNG", optimize=True)
         return image_path
     except Exception:
         safe_remove(str(image_path))
         return None
+    finally:
+        for resource in (image, ambient, glow):
+            if resource is not None:
+                resource.close()
 
 
 async def edit_safely(

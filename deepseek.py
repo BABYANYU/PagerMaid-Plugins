@@ -81,8 +81,17 @@ def load_settings():
         settings.update({key: value for key, value in data.items()
                          if key in settings and key not in ("base_url", "timeout", "prompt", "models", "models_at", "max_tokens", "temperature", "search")})
         settings["base_url"] = normalize_url(settings["base_url"])
+        # Never forward a credential inherited from another service to the official API.
+        previous_base = urlsplit(str(data.get("base_url") or DEFAULT_URL))
+        if previous_base.scheme != "https" or previous_base.netloc.lower() != "api.deepseek.com" or previous_base.path.rstrip("/") not in ("", "/v1"):
+            settings["api_key"] = ""
         if not all(isinstance(settings[key], str) for key in ("api_key", "model", "prompt")):
             raise ValueError()
+        # Migrate only the known relay identifier; unknown IDs require explicit selection.
+        legacy_models = {"global:deepseek-v4.1-flash-sg": "deepseek-flash"}
+        settings["model"] = legacy_models.get(settings["model"], settings["model"])
+        if settings["model"] not in {row["id"] for row in BUILTIN_MODELS}:
+            settings["model"] = ""
         if settings["effort"] not in EFFORTS or not isinstance(settings["models"], list):
             raise ValueError()
         if type(settings["timeout"]) is not int or not 15 <= settings["timeout"] <= 600:
@@ -193,6 +202,8 @@ def read_stream(response, deadline, cancel):
 def http_request(settings, path, data=None, stream=False, cancel=None):
     if not settings["api_key"]:
         raise DeepSeekError("尚未设置 API Key，请发送 ,ds 查看设置菜单。")
+    if settings["api_key"].startswith(("wbk_", "wbt_")):
+        raise DeepSeekError("此版本使用 DeepSeek 官方接口，请用 ,ds key 设置官方 API Key，不能使用中转站密钥或管理令牌。")
     cancel = cancel or threading.Event()
     payload = json.dumps(data, ensure_ascii=False).encode("utf-8") if data is not None else None
     request = Request(endpoint(settings, path), data=payload, headers={
@@ -350,20 +361,17 @@ async def edit(message, text, rich=True):
 
 
 def menu_text(settings):
-    lines = ["<b>✦ DeepSeek 设置</b>", "",
-             "API Key：" + ("已设置（隐藏）" if settings["api_key"] else "未设置"), "",
-             "<code>,ds key 你的APIKey</code>　设置密钥", "", "模型："]
-    for index, info in enumerate(settings["models"][:30], 1):
-        current = "（当前）" if info["id"] == settings["model"] else ""
-        lines.extend(["", "%s. %s%s" % (index, html.escape(info["name"]), current),
-                      "<code>,ds model %s</code>" % index])
-    lines.extend(["", "推理强度："])
-    available = model_info(settings).get("efforts") or ["low", "high", "max"]
-    for level in ["auto", "none"] + available:
-        current = "（当前）" if settings["effort"] == level else ""
-        lines.extend(["", "%s　<code>,ds effort %s</code>%s" % (EFFORTS[level], level, current)])
-    lines.extend(["", "<code>,ds balance</code>　查询余额"])
-    return "\n".join(lines)
+    key_state = "已设置" if settings["api_key"] else "未设置"
+    model_name = model_info(settings).get("name") or "未选择"
+    effort = str(settings["effort"]).lower()
+    return (
+        "<b>✦ DeepSeek 设置</b>\n\n<blockquote>"
+        "API Key：<b>" + key_state + "</b>\n\n"
+        "<code>,ds key 你的APIKey</code>　设置密钥\n\n"
+        "模型：<b>" + html.escape(model_name) + "</b>\n\n"
+        "推理强度：<b>" + html.escape(effort) + "</b>\n\n"
+        "<code>,ds balance</code>　查询余额</blockquote>"
+    )
 
 
 async def show_menu(client, message, settings):
@@ -517,9 +525,12 @@ async def deepseek_command(client, message):
         quoted = (getattr(reply, "text", None) or getattr(reply, "caption", None) or "").strip()
         # Pro 遇到带图新闻时使用文字说明，不因不支持识图而拒绝总结。
         image_capable = "image" in model_info(settings).get("input_modalities", [])
-        images = await asyncio.wait_for(collect_images(client, reply), timeout=90) if image_capable or not quoted else []
         async with REQUEST_LIMIT:
-            answer = await request_answer(settings, text, quoted, images)
+            images = await asyncio.wait_for(collect_images(client, reply), timeout=90) if image_capable or not quoted else []
+            try:
+                answer = await request_answer(settings, text, quoted, images)
+            finally:
+                images.clear()
         for chunk in result_messages(answer, settings["model"]):
             options = {"parse_mode": ParseMode.HTML, "disable_web_page_preview": True}
             if reply is not None:
